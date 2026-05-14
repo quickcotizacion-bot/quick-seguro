@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quick Seguro — Cotización generada</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f7f2fd; min-height: 100vh; }
+
+  .header {
+    background: linear-gradient(135deg, #6B3FA0, #C054A0);
+    color: white;
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 { font-size: 20px; font-weight: 800; }
+  .logout { color: white; text-decoration: none; font-size: 13px; opacity: 0.8; }
+  .logout:hover { opacity: 1; }
+
+  .container { max-width: 720px; margin: 40px auto; padding: 0 20px; }
+
+  .success-banner {
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    color: #166534;
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin-bottom: 24px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .card {
+    background: white;
+    border-radius: 16px;
+    padding: 32px;
+    box-shadow: 0 4px 24px rgba(107,63,160,0.08);
+    text-align: center;
+  }
+
+  .client-info { margin-bottom: 24px; }
+  .client-info h2 { color: #1a1a2e; font-size: 18px; margin-bottom: 4px; }
+  .client-info p { color: #9B7EC8; font-size: 14px; }
+
+  .preview {
+    border: 2px solid #e5e0f0;
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 28px;
+  }
+  .preview img { width: 100%; display: block; }
+
+  .actions { display: flex; gap: 12px; justify-content: center; }
+
+  .btn-download {
+    padding: 14px 32px;
+    background: linear-gradient(135deg, #6B3FA0, #C054A0);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: opacity 0.2s;
+  }
+  .btn-download:hover { opacity: 0.9; }
+
+  .btn-nueva {
+    padding: 14px 32px;
+    background: white;
+    color: #6B3FA0;
+    border: 2px solid #6B3FA0;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: background 0.2s;
+  }
+  .btn-nueva:hover { background: #f7f2fd; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🛡 Quick Seguro</h1>
+  <div>
+    <span>Hola, {{ user }} &nbsp;|&nbsp;</span>
+    <a href="/logout" class="logout">Salir</a>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="success-banner">
+    ✅ Cotización generada correctamente
+  </div>
+
+  <div class="card">
+    <div class="client-info">
+      <h2>{{ client_name }}</h2>
+      <p>{{ vehicle }}</p>
+    </div>
+
+    <div class="preview">
+      <img src="/preview/{{ out_filename }}" alt="Cotización">
+    </div>
+
+    <div class="actions">
+      <a href="/descargar/{{ out_filename }}" class="btn-download">⬇ Descargar imagen</a>
+      <a href="/" class="btn-nueva">+ Nueva cotización</a>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

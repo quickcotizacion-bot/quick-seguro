@@ -1,0 +1,8 @@
+flask==3.0.3
+weasyprint==62.3
+pdfplumber==0.11.4
+pdf2image==1.17.0
+pytesseract==0.3.13
+Pillow==10.4.0
+numpy==1.26.4
+gunicorn==22.0.0
