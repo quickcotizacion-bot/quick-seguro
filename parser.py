@@ -209,7 +209,7 @@ def extract_text(pdf_path):
     try:
         from pdf2image import convert_from_path
         import pytesseract
-        images = convert_from_path(pdf_path, dpi=100)
+        images = convert_from_path(pdf_path, dpi=200)
         for img in images[:2]:
             text += pytesseract.image_to_string(img, lang='spa') + "\n"
     except Exception as e:
