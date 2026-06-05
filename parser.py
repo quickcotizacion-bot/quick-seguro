@@ -1,122 +1,36 @@
 """
-parser.py — Lee PDFs de Ciminari Brokers y extrae datos estructurados.
+parser.py — Lee PDFs de Ciminari Brokers + formatos propios de aseguradoras.
 Soporta múltiples PDFs por cliente (merge automático).
 """
-
+ 
 import pdfplumber
 import re
 import math
-
+ 
 # ─── ORDEN CANÓNICO DE ASEGURADORAS ───────────────────────────────────────────
-
+ 
 INSURER_ORDER = ['zurich', 'sancor', 'swiss', 'allianz', 'fed_patronal', 'experta', 'mercantil', 'san_cristobal']
-
-# ─── DETECCIÓN DE ASEGURADORAS ────────────────────────────────────────────────
-
-# ─── IDENTIFICACIÓN DE ASEGURADORA POR NOMBRE DE COBERTURA ───────────────────
-# Los logos de las aseguradoras son imágenes en el PDF (no texto legible).
-# Identificamos cada cobertura por sus nombres de plan, únicos por aseguradora.
-
-def identify_insurer_from_coverage(coverage_name):
-    """
-    Dado el nombre de una cobertura, retorna el insurer_key correspondiente.
-    Retorna None si no reconoce la cobertura.
-    """
-    cu = coverage_name.upper().strip()
-
-    # ── San Cristóbal ──────────────────────────────────────────────────────────
-    if re.match(r'CPLUS', cu) or cu.startswith('C PLUS') or cu.startswith('C+'):
-        return 'san_cristobal'
-    if re.match(r'CM\b', cu) or cu.startswith('CM -'):
-        return 'san_cristobal'
-    if re.match(r'D\d{2,3}\s*[-–]', cu) and 'TODO RIESGO' in cu:
-        return 'san_cristobal'
-    if re.match(r'AUTO MEGA', cu) or re.match(r'AUTO EXTRA', cu) or re.match(r'AUTO PLUS', cu):
-        return 'san_cristobal'
-
-    # ── Sancor ────────────────────────────────────────────────────────────────
-    if 'MAX TOTALES' in cu:
-        return 'sancor'
-    if 'PREMIUM MAX' in cu:
-        return 'sancor'
-    if 'AUTO TODO RIESGO' in cu:
-        return 'sancor'
-
-    # ── Swiss Medical ─────────────────────────────────────────────────────────
-    if re.search(r'\bTC25\b', cu) or re.search(r'\bTC4\b', cu):
-        return 'swiss'
-    if re.match(r'SSN\s*G\s*TC', cu):
-        return 'swiss'
-    if re.match(r'TR\d\b', cu) or re.match(r'SSN\s*G\s*TR', cu):
-        return 'swiss'
-
-    # ── Allianz ───────────────────────────────────────────────────────────────
-    if re.match(r'C2\s*[-–]', cu) or 'CLASICA SEGMENTADA' in cu:
-        return 'allianz'
-    if re.match(r'C4\s*[-–]', cu) or 'DT INC' in cu:
-        return 'allianz'
-    if 'TR C/FRANQ' in cu and 'VALOR DEL' in cu:
-        return 'allianz'
-    if 'TR C/FRANQ' in cu and 'VALOR DEL' in cu.replace('VEHÍCULO', 'VEHICULO'):
-        return 'allianz'
-
-    # ── Experta ───────────────────────────────────────────────────────────────
-    if 'TERCEROS COMPLETOS L' in cu:
-        return 'experta'
-    if 'TERCEROS COMPLETO XL' in cu:
-        return 'experta'
-    if 'TODO RIESGO FRANQ' in cu and 'VARIABLE' in cu:
-        return 'experta'
-
-    # ── Mercantil Andina ──────────────────────────────────────────────────────
-    if re.search(r'\bM\s*PLUS\b', cu) and 'TERCEROS' in cu:
-        return 'mercantil'
-    if re.search(r'\bM\s*B[ÁA]SICA\b', cu):
-        return 'mercantil'
-    if re.match(r'D2\s*[-–]', cu) and 'TODO RIESGO' in cu:
-        return 'mercantil'
-
-    # ── Zurich ────────────────────────────────────────────────────────────────
-    if re.match(r'CG\s*[-–]', cu) or ('TERCEROS PREMIUM CON GRANIZO' in cu and 'COMPLETO' not in cu):
-        return 'zurich'
-    if 'TODO RIESGO' in cu and 'PLAN DV' in cu:
-        return 'zurich'
-    if 'TODO RIESGO' in cu and re.search(r'\bDV\s*\d', cu):
-        return 'zurich'
-
-    # ── Federación Patronal ───────────────────────────────────────────────────
-    if re.match(r'CF\s*[-–]', cu) or 'RC PTAC' in cu:
-        return 'fed_patronal'
-
-    return None  # no reconocida
-
-# Líneas que no son coberturas con precio
-SKIP_PATTERNS = [
-    'Refacturacion:', 'Plan de pago:', 'Suma asegurada:', 'Cobertura', 'Costo',
-    'Presupuesto Automotor', 'Página', 'Cerrito', 'www.ciminari', 'ciminaribrokers',
-    'marcadas con *', 'Las coberturas', 'Estimado', 'Datos del', 'Fecha nacimiento',
-    'Provincia:', 'Forma de pago:', 'Tipo IVA:', 'Tipo uso', 'Código Postal',
-    'Marca:', 'Modelo:', 'Año:', 'Código Infoauto', 'GNC:', 'Refactur',
-]
-
+ 
 # ─── UTILIDADES DE PRECIO Y PORCENTAJE ────────────────────────────────────────
-
+ 
 def extract_price(text):
-    """Ciminari $65.254,00->65254  |  SC propio $ 129.838->129838"""
-    m = re.search(r'\$([ ]*)([\d.]+,[0-9]{2})', text)
+    """
+    Ciminari '$65.254,00'→65254  |  SC/Sancor propio '$ 129.838'→129838
+    """
+    m = re.search(r'\$[ ]*([\d.]+,[0-9]{2})', text)
     if m:
-        s = m.group(2).replace('.', '').replace(',', '.')
+        s = m.group(1).replace('.', '').replace(',', '.')
         val = float(s)
         frac = val - int(val)
         return math.ceil(val) if frac >= 0.5 else int(round(val))
-    m = re.search(r'\$[ ]*(\d{1,3}(?:[.]\d{3})+)', text)
+    m = re.search(r'\$[ ]*(\d{1,3}(?:[.]\d{3})+)(?![,\d])', text)
     if m:
         val = int(m.group(1).replace('.', ''))
         return val if val >= 1000 else None
     return None
-
+ 
 def extract_all_prices_from_line(text):
-    """Extrae todos los precios de una linea."""
+    """Extrae todos los precios de una línea."""
     prices = []
     for m in re.finditer(r'\$[ ]*([\d.]+,[0-9]{2})', text):
         s = m.group(1).replace('.', '').replace(',', '.')
@@ -130,9 +44,9 @@ def extract_all_prices_from_line(text):
         if val >= 1000:
             prices.append(val)
     return prices
-
+ 
 def extract_pct(text):
-    """'3,5%' → 3.5  |  '3%' → 3.0  |  None si no encuentra"""
+    """'3,5%' → 3.5  |  '3%' → 3.0"""
     m = re.search(r'(\d+)[,.](\d+)\s*%', text)
     if m:
         return float(f"{m.group(1)}.{m.group(2)}")
@@ -140,17 +54,31 @@ def extract_pct(text):
     if m:
         return float(m.group(1))
     return None
-
+ 
 def format_pct(pct):
-    """3.0 → '3%'  |  2.5 → '2,50%'  |  3.5 → '3,50%'"""
+    """3.0 → '3%'  |  2.5 → '2,50%'"""
     if pct == int(pct):
         return f"{int(pct)}%"
     return f"{pct:.2f}%".replace('.', ',')
-
+ 
+def extract_deducible_pct_map(text):
+    """
+    Escanea el texto buscando patrones '$X.XXX,XX - N%' (ej. en Sancor pág 2).
+    Retorna dict {monto_entero: porcentaje_float}
+    """
+    pct_map = {}
+    for m in re.finditer(r'\$([\d.]+,\d{2})\s*-\s*(\d+)\s*%', text):
+        try:
+            amount = int(m.group(1).replace('.', '').split(',')[0])
+            pct = float(m.group(2))
+            pct_map[amount] = pct
+        except:
+            pass
+    return pct_map
+ 
 # ─── SELECCIÓN TR POR ASEGURADORA ─────────────────────────────────────────────
-
+ 
 def closest_to_3(options):
-    """options: [(pct, price), ...] → (pct, price) más cercano a 3%. Empate → mayor."""
     if not options:
         return None
     best, best_dist = None, float('inf')
@@ -159,53 +87,45 @@ def closest_to_3(options):
         if dist < best_dist or (dist == best_dist and best and pct > best[0]):
             best, best_dist = (pct, price), dist
     return best
-
+ 
 def select_tr(insurer, options):
-    """Aplica la regla específica de cada aseguradora para elegir TR."""
     if not options:
         return None
     pct_map = {p: v for p, v in options}
-
+ 
     if insurer == 'san_cristobal':
         for p in [2.5, 3.0, 5.0, 2.0, 3.5]:
             if p in pct_map:
                 return (p, pct_map[p])
         return closest_to_3(options)
-
     elif insurer == 'sancor':
         return (3.0, pct_map[3.0]) if 3.0 in pct_map else closest_to_3(options)
-
     elif insurer == 'allianz':
         return (5.0, pct_map[5.0]) if 5.0 in pct_map else closest_to_3(options)
-
     elif insurer == 'swiss':
-        # Siempre TR1 (label "3%" por convención). options guardadas como pct=3.0 para TR1.
         tr1 = [(p, v) for p, v in options if p == 3.0]
         return tr1[0] if tr1 else options[0]
-
     elif insurer == 'experta':
         e2 = [o for o in options if o[0] == 2.0]
         e5 = [o for o in options if o[0] == 5.0]
         if e2 and e5:
             return e2[0]
         return closest_to_3(options)
-
     else:
         return closest_to_3(options)
-
+ 
 # ─── EXTRACCIÓN DE TEXTO DEL PDF ──────────────────────────────────────────────
-
+ 
 def extract_text(pdf_path):
     """Extrae texto. Si el PDF es imagen, usa OCR como fallback."""
     text = ""
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages[:2]:
+        for page in pdf.pages[:3]:
             t = page.extract_text()
             if t:
                 text += t + "\n"
     if text.strip():
         return text
-    # Fallback OCR (para PDFs de formato propio como San Cristóbal)
     try:
         from pdf2image import convert_from_path
         import pytesseract
@@ -213,162 +133,390 @@ def extract_text(pdf_path):
         for img in images[:2]:
             text += pytesseract.image_to_string(img, lang='spa') + "\n"
     except Exception as e:
-        print(f'  ⚠️  OCR fallback error: {e}')
+        print(f'  OCR fallback error: {e}')
     return text
-
+ 
 # ─── PARSEO DE CLIENTE Y VEHÍCULO ─────────────────────────────────────────────
-
+ 
 def parse_client_vehicle(text):
-    """Extrae nombre del cliente y datos del vehículo."""
+    """Extrae nombre del cliente y banner de vehículo."""
     client_name = None
     vehicle_make = None
-
     vehicle_model = None
+ 
     for line in text.split('\n'):
         line = line.strip()
-
+ 
+        # Formato Ciminari: "Estimado APELLIDO, NOMBRE"
         if 'Estimado' in line and not client_name:
             m = re.search(r'Estimado\s+(.+)', line)
             if m:
-                raw = m.group(1).strip()
-                client_name = raw.title().replace(' ,', ',')
-
+                client_name = m.group(1).strip().title().replace(' ,', ',')
+ 
+        # Formato Ciminari: "Marca: FORD  Modelo: FOCUS L/08..."
         if 'Marca:' in line:
             m = re.search(r'Marca:\s*(\S+)', line)
             if m:
                 vehicle_make = m.group(1).strip().upper()
-            # "Modelo: FOCUS L/08..." → extraer nombre comercial (primer token)
             m2 = re.search(r'Modelo:\s*(\S+)', line)
             if m2:
                 vehicle_model = m2.group(1).strip().upper()
-
-        # Formato SC propio: "Modelo: PEUGEOT 3008 - 2.0 HDI..."
+ 
+        # Formato SC propio: "Modelo: RENAULT KANGOO - EXPRESS L/18..."
         if 'Modelo:' in line and not vehicle_make:
             m = re.search(r'Modelo:\s*(\S+)\s+(\S+)', line)
             if m:
                 vehicle_make  = m.group(1).strip().upper()
                 vehicle_model = m.group(2).strip().upper()
-
-    # Banner: "FORD FOCUS", "PEUGEOT 2008", etc.
-    banner = vehicle_make
+ 
+        # Formato Experta/Sancor propio: línea "RENAULT KANGOO EX.L/18..."
+        if not vehicle_make:
+            m = re.search(r'(RENAULT|FORD|CHEVROLET|VW|VOLKSWAGEN|PEUGEOT|FIAT|TOYOTA|CITROEN|NISSAN|HONDA|HYUNDAI|KIA|JEEP|RAM|JAC|CHERY)\s+(\S+)', line.upper())
+            if m:
+                vehicle_make  = m.group(1)
+                vehicle_model = m.group(2).strip('.,')
+ 
+        # Formato Sancor propio: "Marca/Modelo: RENAULT KANGOO EX. 1.6..."
+        if 'Marca/Modelo:' in line and not vehicle_make:
+            m = re.search(r'Marca/Modelo:\s*(\S+)\s+(\S+)', line)
+            if m:
+                vehicle_make  = m.group(1).strip().upper()
+                vehicle_model = m.group(2).strip().upper()
+ 
+        # Formato SC propio: "Cotización para NOMBRE APELLIDO"
+        if 'Cotización para' in line and not client_name:
+            m = re.search(r'Cotización para\s+(.+)', line)
+            if m:
+                raw = m.group(1).strip()
+                # Limpiar palabras que no son nombre (artefactos del OCR multi-columna)
+                stop_words = ['Vehiculo','Vigencia','Modelo','DNI','CP/','GNC','Uso:','IVA:']
+                for sw in stop_words:
+                    idx = raw.find(sw)
+                    if idx > 0:
+                        raw = raw[:idx].strip()
+                if raw:
+                    client_name = raw.title()
+ 
+        # Formato Experta propio: "OSCAR ENRIQUE CAPPA 18/03/2026"
+        if not client_name:
+            m = re.match(r'^([A-ZÁÉÍÓÚÜÑ][A-ZÁÉÍÓÚÜÑ\s]{5,50})\s+\d{2}/\d{2}/\d{4}', line)
+            if m:
+                name_candidate = m.group(1).strip()
+                if len(name_candidate.split()) >= 2 and 'KANGOO' not in name_candidate:
+                    client_name = name_candidate.title()
+ 
+    banner = vehicle_make or "VEHÍCULO"
     if vehicle_model:
         banner = f"{vehicle_make} {vehicle_model}"
-
+ 
     return client_name, banner
-
-# ─── PARSEO DE COBERTURAS Y PRECIOS ───────────────────────────────────────────
-
+ 
+# ─── IDENTIFICACIÓN DE ASEGURADORA POR NOMBRE DE COBERTURA ───────────────────
+ 
+def identify_insurer_from_coverage(coverage_name):
+    """
+    Dado el nombre de una cobertura, retorna el insurer_key.
+    Maneja formatos Ciminari y formatos propios de cada aseguradora.
+    """
+    cu = coverage_name.upper().strip()
+ 
+    # ── San Cristóbal ──────────────────────────────────────────────────────────
+    if re.match(r'CPLUS', cu) or cu.startswith('C PLUS') or cu.startswith('C+'):
+        return 'san_cristobal'
+    if re.match(r'CM\b', cu) or cu.startswith('CM -') or cu.startswith('CM:'):
+        return 'san_cristobal'
+    if re.match(r'D\d{2,3}\s*[-–]', cu) and 'TODO RIESGO' in cu:
+        return 'san_cristobal'
+    if re.match(r'AUTO MEGA', cu) or re.match(r'AUTO EXTRA', cu) or re.match(r'AUTO PLUS', cu):
+        return 'san_cristobal'
+ 
+    # ── Sancor ────────────────────────────────────────────────────────────────
+    if 'MAX TOTALES' in cu:
+        return 'sancor'
+    if 'PREMIUM MAX' in cu or 'MAX PREMIUM' in cu:  # ambos formatos
+        return 'sancor'
+    if 'AUTO TODO RIESGO' in cu:
+        return 'sancor'
+ 
+    # ── Swiss Medical ─────────────────────────────────────────────────────────
+    if re.search(r'\bTC25\b', cu) or re.search(r'\bTC4\b', cu):
+        return 'swiss'
+    if re.match(r'SSN\s*G\s*TC', cu):
+        return 'swiss'
+    if re.match(r'TR\d\b', cu) or re.match(r'SSN\s*G\s*TR', cu):
+        return 'swiss'
+ 
+    # ── Allianz ───────────────────────────────────────────────────────────────
+    if re.match(r'C2\s*[-–]', cu) or 'CLASICA SEGMENTADA' in cu:
+        return 'allianz'
+    if re.match(r'C4\s*[-–]', cu) or 'DT INC' in cu:
+        return 'allianz'
+    if 'TR C/FRANQ' in cu and 'VALOR DEL' in cu:
+        return 'allianz'
+    if 'TR C/FRANQ' in cu and 'VALOR DEL' in cu.replace('VEHÍCULO', 'VEHICULO'):
+        return 'allianz'
+ 
+    # ── Experta ───────────────────────────────────────────────────────────────
+    if 'TERCEROS COMPLETOS L' in cu:
+        return 'experta'
+    if re.match(r'TERCEROS COMPLETO\s+L\b', cu):  # sin S, formato propio
+        return 'experta'
+    if 'TERCEROS COMPLETO XL' in cu:
+        return 'experta'
+    if 'TODO RIESGO' in cu and 'XL' in cu:  # formato propio Experta
+        return 'experta'
+    if 'TODO RIESGO FRANQ' in cu and 'VARIABLE' in cu:
+        return 'experta'
+ 
+    # ── Mercantil Andina ──────────────────────────────────────────────────────
+    if re.search(r'\bM\s*B[ÁA]SICA\b', cu) or 'MBASICA' in cu:
+        return 'mercantil'
+    if re.search(r'\bM\s*PLUS\b', cu) and 'TERCEROS' in cu:
+        return 'mercantil'
+    if re.match(r'D2\s*[-–]', cu) and 'TODO RIESGO' in cu:
+        return 'mercantil'
+ 
+    # ── Zurich ────────────────────────────────────────────────────────────────
+    if re.match(r'CG\s*[-–]', cu) or ('TERCEROS PREMIUM CON GRANIZO' in cu and 'COMPLETO' not in cu):
+        return 'zurich'
+    if 'TODO RIESGO' in cu and 'PLAN DV' in cu:
+        return 'zurich'
+    if 'TODO RIESGO' in cu and re.search(r'\bDV\s*\d', cu):
+        return 'zurich'
+ 
+    # ── Federación Patronal ───────────────────────────────────────────────────
+    if re.match(r'CF\s*[-–]', cu) or 'RC PTAC' in cu:
+        return 'fed_patronal'
+ 
+    return None
+ 
+# ─── LÍNEAS QUE NO SON COBERTURAS ─────────────────────────────────────────────
+ 
+SKIP_PATTERNS = [
+    'Refacturacion:', 'Plan de pago:', 'Suma asegurada:', 'Cobertura', 'Costo',
+    'Presupuesto Automotor', 'Página', 'Cerrito', 'www.ciminari', 'ciminaribrokers',
+    'marcadas con *', 'Las coberturas', 'Estimado', 'Datos del', 'Fecha nacimiento',
+    'Provincia:', 'Forma de pago:', 'Tipo IVA:', 'Tipo uso', 'Código Postal',
+    'Marca:', 'Modelo:', 'Año:', 'Código Infoauto', 'GNC:', 'Refactur',
+    'Importe Mensual', 'Vigencia:', 'Suma asegurada total', 'Frecuencia de Pago',
+    'DATOS DEL VEHICULO', 'SUMAS ASEGURADAS', 'Tipo: Pick', 'Año Modelo',
+    'Origen:', 'Uso:', 'Ubicación', 'Kms anuales', 'Guarda en', 'AUTOMOTORES',
+    'Cotización 0', 'Sucursal Cap', 'Hola,', 'Ofertas Cotizadas',
+    'PLANES CON', 'Tercero Completo', 'PLANES SIN', 'Forma de pago:',
+    'PRODUCTOR', 'DATOS DEL VEH', 'MONTO ASEGURADO',
+]
+ 
+# ─── PARSEO PRINCIPAL DE COBERTURAS ───────────────────────────────────────────
+ 
 def parse_coverage_lines(text):
     """
     Parsea coberturas con precio del texto extraído.
-    Maneja:
-      - Formato Ciminari: precio en la misma línea que la cobertura
-      - Formato SC propio (imagen/OCR): dos columnas CM/C+ con precios
-        en la misma línea pero nombres en líneas anteriores
+    Maneja múltiples formatos:
+      - Ciminari (precio en la misma línea)
+      - SC propio imagen OCR (2 o 3 columnas)
+      - Sancor propio (4 columnas con comillas)
+      - Experta propio (coverage name partida en varias líneas)
     Retorna [(insurer_key, coverage_name, price), ...]
     """
     results = []
     lines = text.split('\n')
-    sc_two_col = False  # True cuando detectamos header CM + C+ del formato SC
-
+    sc_multicol = False      # True cuando detectamos header SC de 2 o 3 cols
+    sc_has_tr_col = False    # True cuando SC tiene columna D (todo riesgo)
+    sc_tr_pct = None         # Porcentaje del TR de SC si está en el header
+    sc_accum = []            # Precios acumulados del SC multi-col (pueden venir en varias líneas)
+    pending_experta_tcf = False  # True cuando vimos "Terceros Completo" sin XL/L
+    sancor_4col_done = False  # Para no procesar Sancor 4col más de una vez
+ 
+    # ── Pre-scan: Sancor 4 columnas ──────────────────────────────────────────
+    # Detectar formato: "Max Totales" "Max Premium" "Todo Riesgo" "Todo Riesgo"
+    for i, line in enumerate(lines):
+        cu = line.upper()
+        if '"MAX TOTALES"' in cu and '"MAX PREMIUM"' in cu and '"TODO RIESGO"' in cu:
+            sancor_entries = _parse_sancor_4col(lines, i, text)
+            results.extend(sancor_entries)
+            sancor_4col_done = True
+            break
+ 
+    # ── Parseo línea a línea ──────────────────────────────────────────────────
     for i, raw_line in enumerate(lines):
         line = raw_line.strip()
         if not line:
             continue
         if any(s in line for s in SKIP_PATTERNS):
             continue
-
+ 
         cu = line.upper()
-
-        # ── Detectar header del formato SC dos columnas ───────────────────────
-        # La línea contiene tanto "CM:" como "C+:" side-by-side
-        if 'CM:' in cu and ('C+:' in cu or 'C+' in cu or 'CPLUS' in cu):
-            sc_two_col = True
+ 
+        # Saltar líneas ya procesadas por Sancor 4col
+        if sancor_4col_done and ('"MAX TOTALES"' in cu or '"MAX PREMIUM"' in cu or
+                                  ('"TODO RIESGO"' in cu and 'IMPORTE' not in cu)):
             continue
-
+ 
+        # ── Detectar header SC multi-columna (OCR) ──────────────────────────
+        # "CM:" + "C+:" [+ "D:" para TR]
+        if 'CM:' in cu and ('C+:' in cu or 'C+' in cu or 'CPLUS' in cu):
+            sc_multicol = True
+            # Verificar si hay columna D (Todo riesgo)
+            sc_has_tr_col = bool(re.search(r'\bD[:\s]', cu) or 'D -' in cu or 'TODO RIESGO' in cu)
+            if sc_has_tr_col:
+                sc_tr_pct = extract_pct(line)
+            continue
+ 
         # ── Precio en la línea ────────────────────────────────────────────────
         price = extract_price(line)
         if not price:
+            # Sin precio: buscar indicadores de cobertura para pending
+            if 'TERCEROS COMPLETO' in cu and 'TODO RIESGO' not in cu:
+                has_xl = 'XL' in cu
+                has_l  = bool(re.search(r'\bL\b', cu) and not has_xl)
+                if not has_xl and not has_l:
+                    # Nombre partido: "Terceros Completo" sin XL ni L todavía
+                    pending_experta_tcf = True
             continue
-
+ 
         all_prices = extract_all_prices_from_line(line)
-
-        # ── Caso SC dos columnas: dos precios en una línea ───────────────────
-        if sc_two_col and len(all_prices) == 2:
-            # Columna izquierda = CM (TCF), columna derecha = C+/CPLUS (TCB)
-            results.append(('san_cristobal', 'CM',    all_prices[0]))
-            results.append(('san_cristobal', 'CPLUS', all_prices[1]))
-            sc_two_col = False
+ 
+        # ── SC multi-col: acumular precios (pueden venir en 1 o 2 líneas) ────
+        # Los deducibles aparecen en paréntesis "($ 616.875)" → ignorarlos
+        if sc_multicol and all_prices:
+            line_no_parens = re.sub(r'\([^)]*\)', '', line)
+            ap_clean = extract_all_prices_from_line(line_no_parens)
+            if not ap_clean:
+                continue  # Solo había precios en paréntesis, ignorar
+            sc_accum.extend(ap_clean)
+            target = 3 if sc_has_tr_col else 2
+            if len(sc_accum) >= target:
+                tr_pct = sc_tr_pct if sc_tr_pct else 2.5
+                if sc_has_tr_col:
+                    results.append(('san_cristobal', f'D - TODO RIESGO {tr_pct}%', sc_accum[0]))
+                    results.append(('san_cristobal', 'CM',    sc_accum[1]))
+                    results.append(('san_cristobal', 'CPLUS', sc_accum[2]))
+                else:
+                    results.append(('san_cristobal', 'CM',    sc_accum[0]))
+                    results.append(('san_cristobal', 'CPLUS', sc_accum[1]))
+                sc_multicol = False
+                sc_has_tr_col = False
+                sc_accum = []
             continue
-
-        # ── Caso SC una sola cobertura en el frame ───────────────────────────
-        # (para cuando solo aparece CM o solo CPLUS en formato propio SC)
-        if len(all_prices) == 1 and sc_two_col:
-            # look back to determine which plan
-            for back_line in lines[max(0, i-10):i]:
-                bcu = back_line.upper().strip()
-                if bcu.startswith('C+') or bcu.startswith('CPLUS'):
-                    results.append(('san_cristobal', 'CPLUS', price))
-                    break
-                if bcu.startswith('CM'):
-                    results.append(('san_cristobal', 'CM', price))
-                    break
-            sc_two_col = False
-            continue
-
-        # ── Caso Ciminari: precio y cobertura en la misma línea ──────────────
-        cov = re.sub(r'\$[\d\.\s,]+', '', line).strip().strip('-:').strip()
+ 
+        # ── Cobertura y precio en la misma línea (Ciminari / Experta propio) ──
+        cov = re.sub(r'\$[ ]*[\d.,]+', '', line).strip().strip('-:').strip()
         cov = re.sub(r'\s+', ' ', cov)
-        if len(cov) >= 2:
-            insurer = identify_insurer_from_coverage(cov)
-            if insurer:
-                results.append((insurer, cov, price))
-
+ 
+        insurer = identify_insurer_from_coverage(cov) if len(cov) >= 2 else None
+ 
+        if insurer:
+            results.append((insurer, cov, price))
+            pending_experta_tcf = False
+        elif pending_experta_tcf:
+            # Precio sin cobertura identificable → viene de "Terceros Completo XL" partido
+            results.append(('experta', 'TERCEROS COMPLETO XL + GRANIZO FULL', price))
+            pending_experta_tcf = False
+ 
     return results
-
+ 
+ 
+def _parse_sancor_4col(lines, header_idx, full_text):
+    """
+    Parsea el formato propio de Sancor con 4 columnas:
+    "Max Totales" "Max Premium" "Todo Riesgo" "Todo Riesgo"
+    Retorna [(insurer, cov, price), ...]
+    """
+    results = []
+ 
+    # Buscar línea de 4 precios en las próximas líneas
+    prices = []
+    for j in range(header_idx + 1, min(header_idx + 6, len(lines))):
+        ap = extract_all_prices_from_line(lines[j])
+        if len(ap) >= 2:
+            prices = ap
+            # Buscar deducibles en la línea siguiente
+            deducibles = []
+            for k in range(j + 1, min(j + 4, len(lines))):
+                d_line = lines[k]
+                d_amounts = [int(m.group(1).replace('.', ''))
+                             for m in re.finditer(r'\$([\d.]+),\d{2}', d_line)]
+                if d_amounts:
+                    deducibles = d_amounts
+                    break
+            break
+ 
+    if not prices:
+        return results
+ 
+    # Col 0: Max Totales → TCB
+    if len(prices) >= 1:
+        results.append(('sancor', 'MAX TOTALES', prices[0]))
+ 
+    # Col 1: Max Premium → TCF
+    if len(prices) >= 2:
+        results.append(('sancor', 'PREMIUM MAX', prices[1]))
+ 
+    # Cols 2 y 3: Todo Riesgo options
+    # Usar mapa de deducible→% del texto (página 2) para identificar %
+    pct_map = extract_deducible_pct_map(full_text)
+ 
+    tr_options_raw = []
+    if len(prices) >= 3:
+        tr_options_raw.append(prices[2])
+    if len(prices) >= 4:
+        tr_options_raw.append(prices[3])
+ 
+    for idx, tr_price in enumerate(tr_options_raw):
+        pct = None
+        if idx < len(deducibles if 'deducibles' in dir() else []):
+            ded_amount = deducibles[idx]
+            pct = pct_map.get(ded_amount)
+        if pct is None:
+            # Fallback: el segundo TR (mayor precio) es el 3%
+            # Para Sancor: menor deducible = menor % = mayor precio
+            pct = 3.0 if tr_price == max(tr_options_raw) else 4.0
+        results.append(('sancor', f'AUTO TODO RIESGO {int(pct)}%', tr_price))
+ 
+    return results
+ 
 # ─── CONSTRUCCIÓN DE FILAS ────────────────────────────────────────────────────
-
+ 
 def build_rows(coverage_lines):
     """
     coverage_lines: [(insurer, coverage_name, price), ...]
     Retorna dict {insurer_key: {logo_key, tcb, tcf, tr, fr}}
-    aplicando todas las reglas del handoff.
     """
     by_insurer = {}
     for ins, cov, price in coverage_lines:
         by_insurer.setdefault(ins, []).append((cov, price))
-
+ 
     rows = {}
-
+ 
     for insurer, coverages in by_insurer.items():
         tcb = tcf = tr_val = fr_str = None
         tr_options = []
-
+ 
         for cov, price in coverages:
             cu = cov.upper()
-
+ 
             # ── San Cristóbal ──────────────────────────────────────────────────
             if insurer == 'san_cristobal':
-                if re.match(r'CPLUS', cu):
+                if re.match(r'CPLUS', cu) or cu.startswith('C+') or cu.startswith('C PLUS'):
                     tcb = price
-                elif re.match(r'CM\b', cu) or cu.startswith('CM -'):
+                elif re.match(r'CM\b', cu) or cu.startswith('CM -') or cu.startswith('CM:'):
                     tcf = price
-                elif 'TODO RIESGO' in cu or re.match(r'D\d+\s*[-–]', cu):
+                elif 'TODO RIESGO' in cu or re.match(r'D\d{2,3}\s*[-–]', cu) or cu.startswith('D -'):
                     pct = extract_pct(cov)
                     if pct:
                         tr_options.append((pct, price))
-
+ 
             # ── Sancor ────────────────────────────────────────────────────────
             elif insurer == 'sancor':
                 if 'MAX TOTALES' in cu:
                     tcb = price
-                elif 'PREMIUM MAX' in cu:
+                elif 'PREMIUM MAX' in cu or 'MAX PREMIUM' in cu:
                     tcf = price
                 elif 'TODO RIESGO' in cu or 'AUTO TODO' in cu:
                     pct = extract_pct(cov)
                     if pct:
                         tr_options.append((pct, price))
-
+ 
             # ── Swiss Medical ─────────────────────────────────────────────────
             elif insurer == 'swiss':
                 if 'TC25' in cu:
@@ -376,7 +524,6 @@ def build_rows(coverage_lines):
                 elif 'TC4' in cu:
                     tcf = price
                 elif re.search(r'\bTR\d\b', cu) or 'TODO RIESGO' in cu:
-                    # TR1 siempre → representamos como pct=3.0 (label "3%" por convención)
                     if 'TR1' in cu:
                         tr_options.append((3.0, price))
                     elif 'TR5' in cu:
@@ -384,7 +531,7 @@ def build_rows(coverage_lines):
                     else:
                         pct = extract_pct(cov) or 3.0
                         tr_options.append((pct, price))
-
+ 
             # ── Allianz ───────────────────────────────────────────────────────
             elif insurer == 'allianz':
                 if re.search(r'\bC2\b', cu):
@@ -395,18 +542,26 @@ def build_rows(coverage_lines):
                     pct = extract_pct(cov)
                     if pct:
                         tr_options.append((pct, price))
-
+ 
             # ── Experta ───────────────────────────────────────────────────────
             elif insurer == 'experta':
-                if ('COMPLETOS L' in cu or cu.endswith(' L')) and 'TODO RIESGO' not in cu:
+                is_tcb = (('COMPLETOS L' in cu or 'COMPLETO L' in cu or
+                           cu.endswith(' L')) and
+                          'TODO RIESGO' not in cu and 'XL' not in cu)
+                is_tcf = ('XL' in cu and 'TODO RIESGO' not in cu and 'FRANQ' not in cu)
+                is_tr  = ('TODO RIESGO' in cu or 'FRANQ. VARIABLE' in cu or
+                          'FRANQ VARIABLE' in cu or
+                          (cov in ('tcf', 'tcb')))  # special marker no aplica aquí
+ 
+                if is_tcb:
                     tcb = price
-                elif 'XL' in cu and 'TODO RIESGO' not in cu and 'FRANQ' not in cu:
+                elif is_tcf:
                     tcf = price
-                elif 'TODO RIESGO' in cu or 'FRANQ. VARIABLE' in cu or 'FRANQ VARIABLE' in cu:
+                elif is_tr:
                     pct = extract_pct(cov)
                     if pct:
                         tr_options.append((pct, price))
-
+ 
             # ── Mercantil Andina ──────────────────────────────────────────────
             elif insurer == 'mercantil':
                 if re.search(r'M\s*B[ÁA]SICA', cu) or 'MBASICA' in cu:
@@ -417,7 +572,7 @@ def build_rows(coverage_lines):
                     pct = extract_pct(cov)
                     if pct:
                         tr_options.append((pct, price))
-
+ 
             # ── Zurich ────────────────────────────────────────────────────────
             elif insurer == 'zurich':
                 if re.search(r'\bCG\b', cu) and 'TODO RIESGO' not in cu:
@@ -426,7 +581,7 @@ def build_rows(coverage_lines):
                     pct = extract_pct(cov)
                     if pct:
                         tr_options.append((pct, price))
-
+ 
             # ── Federación Patronal ───────────────────────────────────────────
             elif insurer == 'fed_patronal':
                 if re.search(r'\bCF\b', cu) or 'RC PTAC' in cu:
@@ -435,21 +590,17 @@ def build_rows(coverage_lines):
                     pct = extract_pct(cov)
                     if pct:
                         tr_options.append((pct, price))
-
+ 
         # Seleccionar mejor TR
         best_tr = select_tr(insurer, tr_options)
         if best_tr:
             tr_val = best_tr[1]
-            # Swiss: siempre mostrar "3%" aunque la franquicia real sea TR1
-            if insurer == 'swiss':
-                fr_str = "3%"
-            else:
-                fr_str = format_pct(best_tr[0])
-
+            fr_str = "3%" if insurer == 'swiss' else format_pct(best_tr[0])
+ 
         # Regla universal: si TCF < TCB → TCB vacío
         if tcb and tcf and tcf < tcb:
             tcb = None
-
+ 
         rows[insurer] = {
             'logo_key': insurer,
             'tcb': tcb,
@@ -457,48 +608,42 @@ def build_rows(coverage_lines):
             'tr': tr_val,
             'fr': fr_str,
         }
-
+ 
     return rows
-
+ 
 # ─── FUNCIÓN PRINCIPAL: PARSEAR Y MERGEAR N PDFs ──────────────────────────────
-
+ 
 def parse_and_merge(pdf_paths):
     """
     Parsea 1 o más PDFs del mismo cliente y retorna datos unificados.
-
-    Regla duplicados: si la misma aseguradora aparece en dos PDFs,
-    se queda con la más barata (comparando TCF, o TCB si no hay TCF).
-
-    Retorna: (client_name, vehicle_make, rows_list, has_tr)
+    Retorna: (client_name, vehicle_banner, rows_list, has_tr)
     """
     all_rows = {}
     client_name = None
-    vehicle_make = None
-
+    vehicle_banner = None
+ 
     for path in pdf_paths:
         text = extract_text(path)
-        name, make = parse_client_vehicle(text)
+        name, banner = parse_client_vehicle(text)
         coverage_lines = parse_coverage_lines(text)
         rows = build_rows(coverage_lines)
-
-        if client_name is None and name:
+ 
+        # Preferir el nombre más completo (más palabras)
+        if name and (client_name is None or len(name.split()) > len((client_name or '').split())):
             client_name = name
-        if vehicle_make is None and make:
-            vehicle_make = make
-
+        if vehicle_banner is None and banner and banner != 'VEHÍCULO':
+            vehicle_banner = banner
+ 
         for key, row in rows.items():
             if key in all_rows:
-                # Duplicado: quedarse con el más barato
                 existing_price = all_rows[key].get('tcf') or all_rows[key].get('tcb') or float('inf')
                 new_price      = row.get('tcf') or row.get('tcb') or float('inf')
                 if new_price < existing_price:
                     all_rows[key] = row
             else:
                 all_rows[key] = row
-
-    # Ordenar según INSURER_ORDER
+ 
     rows_list = [all_rows[k] for k in INSURER_ORDER if k in all_rows]
-
     has_tr = any(r.get('tr') is not None for r in rows_list)
-
-    return client_name, vehicle_make, rows_list, has_tr
+ 
+    return client_name, vehicle_banner, rows_list, has_tr
