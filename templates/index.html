@@ -127,7 +127,7 @@
 <div class="container">
   <div class="card">
     <h2>Nueva cotización</h2>
-    <p>Subí hasta 3 PDFs del mismo cliente y el sistema genera la imagen automáticamente.</p>
+    <p>Subí hasta 6 PDFs del mismo cliente y el sistema genera la imagen automáticamente.</p>
 
     {% with messages = get_flashed_messages(category_filter=["error"]) %}
       {% if messages %}
@@ -208,7 +208,7 @@
   function addFiles(files) {
     for (const f of files) {
       if (!f.name.toLowerCase().endsWith('.pdf')) continue;
-      if (selectedFiles.length >= 3) break;
+      if (selectedFiles.length >= 6) break;
       if (!selectedFiles.find(x => x.name === f.name)) {
         selectedFiles.push(f);
       }
