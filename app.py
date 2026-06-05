@@ -73,8 +73,8 @@ def generar():
     if not files:
         flash("Por favor subí al menos un PDF.", "error")
         return redirect(url_for("index"))
-    if len(files) > 3:
-        flash("Máximo 3 PDFs por cotización.", "error")
+    if len(files) > 6:
+        flash("Máximo 6 PDFs por cotización.", "error")
         return redirect(url_for("index"))
 
     # Guardar PDFs temporalmente
