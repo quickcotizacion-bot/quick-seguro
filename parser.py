@@ -132,6 +132,10 @@ def extract_text(pdf_path):
             text += pytesseract.image_to_string(img, lang='spa') + "\n"
     except Exception as e:
         print(f'  OCR fallback error: {e}')
+    # === DEBUG TEMPORAL: imprimir texto OCR en logs ===
+    print("===OCR_DEBUG_START===")
+    print(text[:2500])
+    print("===OCR_DEBUG_END===")
     return text
  
 # ─── PARSEO DE CLIENTE Y VEHÍCULO ─────────────────────────────────────────────
