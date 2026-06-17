@@ -142,7 +142,8 @@ def parse_client_vehicle(text):
     vehicle_make = None
     vehicle_model = None
  
-    for line in text.split('\n'):
+    all_lines = text.split('\n')
+    for i, line in enumerate(all_lines):
         line = line.strip()
  
         # Formato Ciminari: "Estimado APELLIDO, NOMBRE"
@@ -191,6 +192,14 @@ def parse_client_vehicle(text):
                     idx = raw.find(sw)
                     if idx > 0:
                         raw = raw[:idx].strip()
+                # El OCR puede partir el apellido a la línea siguiente (layout
+                # de columnas). Si la línea próxima es una sola palabra tipo
+                # apellido (mayúscula inicial, sin números ni ":"), anexarla.
+                if raw and i + 1 < len(all_lines):
+                    nxt = all_lines[i + 1].strip()
+                    if (re.match(r'^[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+$', nxt) and
+                            len(nxt) >= 3 and ':' not in nxt):
+                        raw = f"{raw} {nxt}"
                 if raw:
                     client_name = raw.title()
  
@@ -338,14 +347,21 @@ def parse_coverage_lines(text):
     pending_experta_tcf = False
     sancor_4col_done = False
  
-    # ── Pre-scan: Sancor 4 columnas ──────────────────────────────────────────
+    # ── Pre-scan: Sancor formato propio (3 o 4 columnas) ─────────────────────
+    # El header puede tener "Max Totales" + "Max Premium" + "Todo Riesgo"...
+    # o variantes donde falta alguna (ej. solo "Max Premium" + 2x "Todo Riesgo").
     for i, line in enumerate(lines):
         cu = line.upper()
-        if '"MAX TOTALES"' in cu and '"MAX PREMIUM"' in cu and '"TODO RIESGO"' in cu:
-            sancor_entries = _parse_sancor_4col(lines, i, text)
-            results.extend(sancor_entries)
-            sancor_4col_done = True
-            break
+        has_max = '"MAX TOTALES"' in cu or '"MAX PREMIUM"' in cu
+        n_tr = cu.count('"TODO RIESGO"')
+        if has_max and (('"MAX TOTALES"' in cu and '"MAX PREMIUM"' in cu) or n_tr >= 1):
+            # Es el header de Sancor propio si tiene comillas de planes
+            if cu.count('"') >= 4:  # al menos 2 planes entre comillas
+                sancor_entries = _parse_sancor_cols(lines, i, text)
+                if sancor_entries:
+                    results.extend(sancor_entries)
+                    sancor_4col_done = True
+                    break
  
     # ── Parseo línea a línea ──────────────────────────────────────────────────
     for i, raw_line in enumerate(lines):
@@ -438,29 +454,76 @@ def parse_coverage_lines(text):
     return results
  
  
-def _parse_sancor_4col(lines, header_idx, full_text):
+def _parse_sancor_cols(lines, header_idx, full_text):
     """
-    Parsea el formato propio de Sancor con 4 columnas:
-    "Max Totales" "Max Premium" "Todo Riesgo" "Todo Riesgo"
+    Parsea el formato propio de Sancor con 3 o 4 columnas.
+    Lee los nombres de plan del header (entre comillas) en orden, y los
+    asocia a los precios de la línea siguiente, columna por columna.
+ 
+    Planes posibles:
+      "Max Totales"  → TC Básico
+      "Max Premium"  → TC Full
+      "Todo Riesgo"  → opción TR (puede haber 1 o 2, con deducibles distintos)
     """
     results = []
+ 
+    # 1. Extraer los nombres de plan del header en orden (entre comillas)
+    header_line = lines[header_idx]
+    plan_names = re.findall(r'"([^"]+)"', header_line)
+    if not plan_names:
+        return results
+ 
+    # 2. Buscar la línea con los precios (misma cantidad que planes idealmente)
     prices = []
-    deducibles = []
+    price_line_idx = None
     for j in range(header_idx + 1, min(header_idx + 6, len(lines))):
         ap = extract_all_prices_from_line(lines[j])
         if len(ap) >= 2:
             prices = ap
-            for k in range(j + 1, min(j + 4, len(lines))):
-                d_line = lines[k]
-                d_amounts = [int(m.group(1).replace('.', ''))
-                             for m in re.finditer(r'\$([\d.]+),\d{2}', d_line)]
-                if d_amounts:
-                    deducibles = d_amounts
-                    break
+            price_line_idx = j
             break
- 
     if not prices:
         return results
+ 
+    # 3. Buscar deducibles (línea con "$X - N%") para mapear % de los TR
+    deducibles = []  # lista de (monto, pct)
+    if price_line_idx:
+        for k in range(price_line_idx + 1, min(price_line_idx + 4, len(lines))):
+            d_line = lines[k]
+            for m in re.finditer(r'\$([\d.]+),\d{2}\s*-\s*(\d+)\s*%', d_line):
+                amount = int(m.group(1).replace('.', ''))
+                pct = float(m.group(2))
+                deducibles.append((amount, pct))
+            if deducibles:
+                break
+ 
+    # 4. Asociar cada plan con su precio (columna por columna)
+    pct_map = extract_deducible_pct_map(full_text)
+    tr_count = 0
+    for idx, plan in enumerate(plan_names):
+        if idx >= len(prices):
+            break
+        plan_u = plan.upper()
+        price = prices[idx]
+ 
+        if 'MAX TOTALES' in plan_u:
+            results.append(('sancor', 'MAX TOTALES', price))
+        elif 'MAX PREMIUM' in plan_u or 'PREMIUM MAX' in plan_u:
+            results.append(('sancor', 'PREMIUM MAX', price))
+        elif 'TODO RIESGO' in plan_u:
+            # Determinar % de franquicia para este TR
+            pct = None
+            # Intentar por deducible en la misma posición
+            if tr_count < len(deducibles):
+                pct = deducibles[tr_count][1]
+            if pct is None:
+                pct = pct_map.get(price)
+            if pct is None:
+                pct = 3.0  # fallback
+            results.append(('sancor', f'AUTO TODO RIESGO {int(pct)}%', price))
+            tr_count += 1
+ 
+    return results
  
     if len(prices) >= 1:
         results.append(('sancor', 'MAX TOTALES', prices[0]))
