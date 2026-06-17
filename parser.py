@@ -43,6 +43,25 @@ def extract_all_prices_from_line(text):
             prices.append(val)
     return prices
  
+def extract_sc_amounts(text):
+    """
+    Extrae montos para el formato OCR de San Cristóbal, donde el OCR de Render
+    a veces NO detecta el símbolo $. Busca números tipo 214.251 o 146.625
+    (1 a 3 dígitos + grupos de .XXX) que representan precios de cuota.
+    Ignora años (2016, 2026), porcentajes y números cortos.
+    """
+    amounts = []
+    # Primero intentar con $ (más confiable)
+    with_dollar = extract_all_prices_from_line(text)
+    if with_dollar:
+        return with_dollar
+    # Sin $: números con separador de miles (ej. 214.251, 146.625, 145.435)
+    for m in re.finditer(r'(?<![\d.])(\d{1,3}(?:\.\d{3})+)(?![\d])', text):
+        val = int(m.group(1).replace('.', ''))
+        if val >= 10000:  # precios de cuota son >= 5 dígitos
+            amounts.append(val)
+    return amounts
+ 
 def extract_pct(text):
     """'3,5%' → 3.5  |  '3%' → 3.0"""
     m = re.search(r'(\d+)[,.](\d+)\s*%', text)
@@ -132,10 +151,6 @@ def extract_text(pdf_path):
             text += pytesseract.image_to_string(img, lang='spa') + "\n"
     except Exception as e:
         print(f'  OCR fallback error: {e}')
-    # === DEBUG TEMPORAL: imprimir texto OCR en logs ===
-    print("===OCR_DEBUG_START===")
-    print(text[:2500])
-    print("===OCR_DEBUG_END===")
     return text
  
 # ─── PARSEO DE CLIENTE Y VEHÍCULO ─────────────────────────────────────────────
@@ -389,6 +404,30 @@ def parse_coverage_lines(text):
                 sc_tr_pct = extract_pct(line)
             continue
  
+        # ── SC multi-col activo: extraer montos con o SIN $ (OCR Render) ─────
+        # El OCR de Render a veces omite el "$", dejando "214.251" suelto.
+        # Por eso, estando en sc_multicol, intentamos extraer montos primero
+        # con la función tolerante, antes del check normal de precio.
+        if sc_multicol:
+            line_no_parens = re.sub(r'\([^)]*\)', '', line)
+            sc_amounts = extract_sc_amounts(line_no_parens)
+            if sc_amounts:
+                sc_accum.extend(sc_amounts)
+                target = 3 if sc_has_tr_col else 2
+                if len(sc_accum) >= target:
+                    tr_pct = sc_tr_pct if sc_tr_pct else 2.5
+                    if sc_has_tr_col:
+                        results.append(('san_cristobal', f'D - TODO RIESGO {tr_pct}%', sc_accum[0]))
+                        results.append(('san_cristobal', 'CM',    sc_accum[1]))
+                        results.append(('san_cristobal', 'CPLUS', sc_accum[2]))
+                    else:
+                        results.append(('san_cristobal', 'CM',    sc_accum[0]))
+                        results.append(('san_cristobal', 'CPLUS', sc_accum[1]))
+                    sc_multicol = False
+                    sc_has_tr_col = False
+                    sc_accum = []
+                continue
+ 
         # ── Precio en la línea ────────────────────────────────────────────────
         price = extract_price(line)
         if not price:
@@ -410,29 +449,6 @@ def parse_coverage_lines(text):
             continue
  
         all_prices = extract_all_prices_from_line(line)
- 
-        # ── SC multi-col: acumular precios (pueden venir en 1 o 2 líneas) ────
-        # Los deducibles aparecen en paréntesis "($ 616.875)" → ignorarlos
-        if sc_multicol and all_prices:
-            line_no_parens = re.sub(r'\([^)]*\)', '', line)
-            ap_clean = extract_all_prices_from_line(line_no_parens)
-            if not ap_clean:
-                continue
-            sc_accum.extend(ap_clean)
-            target = 3 if sc_has_tr_col else 2
-            if len(sc_accum) >= target:
-                tr_pct = sc_tr_pct if sc_tr_pct else 2.5
-                if sc_has_tr_col:
-                    results.append(('san_cristobal', f'D - TODO RIESGO {tr_pct}%', sc_accum[0]))
-                    results.append(('san_cristobal', 'CM',    sc_accum[1]))
-                    results.append(('san_cristobal', 'CPLUS', sc_accum[2]))
-                else:
-                    results.append(('san_cristobal', 'CM',    sc_accum[0]))
-                    results.append(('san_cristobal', 'CPLUS', sc_accum[1]))
-                sc_multicol = False
-                sc_has_tr_col = False
-                sc_accum = []
-            continue
  
         # ── Cobertura y precio en la misma línea ─────────────────────────────
         cov = re.sub(r'\$[ ]*[\d.,]+', '', line).strip().strip('-:').strip()
@@ -729,3 +745,4 @@ def parse_and_merge(pdf_paths):
     has_tr = any(r.get('tr') is not None for r in rows_list)
  
     return client_name, vehicle_banner, rows_list, has_tr
+ 
