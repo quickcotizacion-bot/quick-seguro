@@ -312,6 +312,9 @@ def identify_insurer_from_coverage(coverage_name):
     # ── Federación Patronal ───────────────────────────────────────────────────
     if re.match(r'CF\s*[-–]', cu) or 'RC PTAC' in cu:
         return 'fed_patronal'
+    # TD, TD1, TD2, TD3 = planes Todo Riesgo con franquicia fija de Fed Patronal
+    if re.match(r'TD\d?\s*[-–]', cu) and 'TODO RIESGO' in cu:
+        return 'fed_patronal'
  
     return None
  
@@ -429,7 +432,11 @@ def parse_coverage_lines(text):
                 continue
  
         # ── Precio en la línea ────────────────────────────────────────────────
-        price = extract_price(line)
+        # Ignorar montos entre paréntesis: son franquicias/deducibles, no el
+        # precio de la cobertura. Ej: "TD3 - ... (Franquicia: 2% - $400.000,00)
+        # $99.444,25" → el precio real es $99.444,25, no los $400.000 de adentro.
+        line_for_price = re.sub(r'\([^)]*\)', '', line)
+        price = extract_price(line_for_price)
         if not price:
             # Sin precio: ¿es un nombre de cobertura Experta partido en líneas?
             # FIX bug $400.000: solo activar pending si la cobertura NO se
@@ -745,4 +752,3 @@ def parse_and_merge(pdf_paths):
     has_tr = any(r.get('tr') is not None for r in rows_list)
  
     return client_name, vehicle_banner, rows_list, has_tr
- 
